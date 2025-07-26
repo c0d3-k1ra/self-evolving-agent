@@ -59,7 +59,7 @@ class AgentSimulation:
         # Simulation state
         self.running = True
         self.paused = False
-        self.step_delay = 1.0  # Seconds between moves
+        self.step_delay = 3.0  # Seconds between moves
         self.last_move_time = 0
         self.move_count = 0
         self.max_moves = 100

@@ -28,14 +28,6 @@ class Agent:
         self.memory = memory
         self.current_position = current_position
 
-        # Path planning state
-        self.planned_path = []  # List of moves to execute
-        self.path_index = 0     # Current position in planned path
-        self.position_history = []  # Track recent positions for loop detection
-        self.stuck_counter = 0  # Count consecutive failed attempts
-        self.max_stuck_attempts = 3  # Re-plan after this many stuck attempts
-        self.position_history_size = 10  # Keep track of last N positions
-
         # Initialize OpenAI client with custom URL and model support
         self.client = None
         self.model = os.getenv('OPENAI_MODEL', 'gpt-3.5-turbo')  # Default to gpt-3.5-turbo
@@ -56,7 +48,6 @@ class Agent:
 
         # Log initial position
         self.memory.log_position(current_position[0], current_position[1])
-        self.position_history.append(current_position)
 
     def direction_to_delta(self, direction: str) -> Tuple[int, int]:
         """
@@ -100,120 +91,110 @@ class Agent:
             # Generic format
             return f"Grid information: {str(grid)}"
 
-    def _create_path_planning_prompt(self, grid: Any) -> str:
+    def decide_next_move_stepwise(self, grid, goal=None, memory=None) -> Tuple[Optional[Tuple[int, int]], str]:
         """
-        Create the prompt for LLM path planning.
+        Step-by-step LLM decision making for next move.
 
         Args:
-            grid: Current grid state
+            grid: Current grid state (2D list or string representation)
+            goal: Goal position (optional, uses self.goal if not provided)
+            memory: Memory context (optional, uses self.memory if not provided)
 
         Returns:
-            Formatted prompt string for path planning
+            Tuple of ((dx, dy), reason) or (None, reason) if decision fails
         """
+        # Use provided parameters or defaults
+        goal_pos = goal if goal is not None else self.goal
+        memory_ctx = memory if memory is not None else self.memory
+
         x, y = self.current_position
-        gx, gy = self.goal
+        goal_x, goal_y = goal_pos
 
-        # Get recent movement history for context
-        recent_positions = self.position_history[-5:] if self.position_history else []
-        position_context = f"Recent positions: {recent_positions}" if recent_positions else "No recent movement history"
+        # Format grid as text block and mark current agent position
+        if isinstance(grid, list):
+            # Create a copy of the grid to modify
+            grid_copy = [row[:] for row in grid]
+            # Mark current agent position as 'A'
+            if 0 <= y < len(grid_copy) and 0 <= x < len(grid_copy[0]):
+                grid_copy[y][x] = 'A'
+            grid_text = "\n".join(" ".join(str(cell) for cell in row) for row in grid_copy)
 
-        # Check if we've been stuck
-        stuck_context = ""
-        if self.stuck_counter > 0:
-            stuck_context = f"IMPORTANT: Previous attempts failed {self.stuck_counter} times. You need a different strategy!"
+            # Get grid dimensions
+            grid_height = len(grid)
+            grid_width = len(grid[0]) if grid else 0
+        else:
+            grid_text = str(grid)
+            grid_height = 10  # Default assumption
+            grid_width = 12   # Default assumption
 
-        grid_context = self._format_grid_context(grid)
+        # Determine valid moves based on boundaries
+        valid_moves = []
+        if x > 0:
+            valid_moves.append("left")
+        if x < grid_width - 1:
+            valid_moves.append("right")
+        if y > 0:
+            valid_moves.append("up")
+        if y < grid_height - 1:
+            valid_moves.append("down")
 
-        prompt = f"""You are an intelligent agent navigating a grid world. You need to plan a complete path from your current position to the goal.
+        # Create boundary context
+        boundary_info = []
+        if x == 0:
+            boundary_info.append("LEFT edge (cannot move left)")
+        if x == grid_width - 1:
+            boundary_info.append("RIGHT edge (cannot move right)")
+        if y == 0:
+            boundary_info.append("TOP edge (cannot move up)")
+        if y == grid_height - 1:
+            boundary_info.append("BOTTOM edge (cannot move down)")
 
-Current situation:
+        boundary_context = f"Boundaries: {', '.join(boundary_info)}" if boundary_info else "No boundary constraints"
+
+        # Create the step-by-step prompt
+        prompt = f"""You are an agent navigating a grid world.
+
+CURRENT SITUATION:
 - Your position: ({x}, {y})
-- Goal position: ({gx}, {gy})
-- {position_context}
-{stuck_context}
+- Goal position: ({goal_x}, {goal_y})
+- Grid size: {grid_width} columns (X: 0-{grid_width-1}), {grid_height} rows (Y: 0-{grid_height-1})
+- {boundary_context}
 
-{grid_context}
+VALID MOVES: {', '.join(valid_moves)}
+
+Grid layout:
+{grid_text}
+
+Legend:
+. = empty space, # = wall, G = goal, A = agent (YOU), S = start, V = visited
 
 COORDINATE SYSTEM:
-- X increases from LEFT to RIGHT (0 = leftmost, higher = rightmost)
-- Y increases from TOP to BOTTOM (0 = topmost, higher = bottommost)
-- "up" = decrease Y (move towards top)
-- "down" = increase Y (move towards bottom)
-- "left" = decrease X (move towards left)
-- "right" = increase X (move towards right)
+- X increases LEFT to RIGHT (0 = leftmost)
+- Y increases TOP to BOTTOM (0 = topmost)
+- up = decrease Y, down = increase Y, left = decrease X, right = increase X
 
-Legend: '.' = empty space, '#' = wall/obstacle, 'G' = goal, 'A' = your current position
+TASK: Choose your next move to get closer to the goal.
 
-TASK: Plan a complete sequence of moves to reach the goal efficiently.
+IMPORTANT: You can ONLY choose from these valid moves: {', '.join(valid_moves)}
 
-Available moves: up, down, left, right
+Return a JSON:
+{{
+  "move": "right",
+  "reason": "Moving right brings me closer to the goal"
+}}"""
 
-MOVEMENT RULES:
-- To reach a HIGHER Y coordinate (goal Y > current Y): use "down"
-- To reach a LOWER Y coordinate (goal Y < current Y): use "up"
-- To reach a HIGHER X coordinate (goal X > current X): use "right"
-- To reach a LOWER X coordinate (goal X < current X): use "left"
-
-Please respond with a JSON object containing:
-- "path": array of moves like ["right", "right", "down", "left", "up"]
-- "reasoning": explanation of your path planning strategy
-- "estimated_steps": number of moves in your path
-
-Example response:
-{{"path": ["right", "down", "right"], "reasoning": "Moving around obstacle to reach goal", "estimated_steps": 3}}
-
-IMPORTANT:
-- Plan the COMPLETE path, not just the next move
-- Consider the coordinate system: Y=0 is TOP, Y increases DOWNWARD
-- If goal Y > current Y, you need to move DOWN
-- If goal Y < current Y, you need to move UP
-"""
-        return prompt
-
-    def _detect_loop(self) -> bool:
-        """
-        Detect if the agent is stuck in a loop by checking recent positions.
-
-        Returns:
-            True if stuck in a loop, False otherwise
-        """
-        if len(self.position_history) < 4:
-            return False
-
-        # Count how many times current position appears in recent history
-        current_pos = self.current_position
-        recent_positions = self.position_history[-6:]  # Check last 6 positions
-        position_count = recent_positions.count(current_pos)
-
-        # If we've been in the same position 3+ times recently, we're stuck
-        return position_count >= 3
-
-    def _plan_path(self, grid: Any) -> bool:
-        """
-        Use LLM to plan a complete path from current position to goal.
-
-        Args:
-            grid: Current grid state
-
-        Returns:
-            True if path planning succeeded, False otherwise
-        """
         if not self.client:
-            # Use fallback path planning
-            return self._fallback_path_planning()
+            # Fallback decision
+            return self._fallback_decision_stepwise(goal_pos)
 
         try:
-            prompt = self._create_path_planning_prompt(grid)
-
-            self.memory.log_thought(f"Planning path from {self.current_position} to {self.goal}")
-
             # Print LLM call details
             print("\n" + "="*80)
-            print("🤖 LLM PATH PLANNING CALL")
+            print("🤖 LLM STEPWISE DECISION CALL")
             print("="*80)
             print(f"Model: {self.model}")
-            print(f"Temperature: 0.3")
-            print(f"Max Tokens: 300")
+            print(f"Temperature: 0.7")
+            print(f"Max Tokens: 150")
             print("\nPROMPT:")
             print("-" * 40)
             print(prompt)
@@ -222,11 +203,11 @@ IMPORTANT:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You are a helpful assistant that plans navigation paths. Always respond with valid JSON containing a complete path."},
+                    {"role": "system", "content": "You are a helpful assistant that makes navigation decisions. Always respond with valid JSON."},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3,  # Lower temperature for more consistent planning
-                max_tokens=300
+                temperature=0.7,
+                max_tokens=150
             )
 
             # Parse the response
@@ -239,86 +220,84 @@ IMPORTANT:
             print("-" * 40)
             print("="*80)
 
+            # Extract JSON from response
             try:
-                # Extract JSON from response
                 start_idx = response_text.find('{')
                 end_idx = response_text.rfind('}') + 1
                 if start_idx != -1 and end_idx != 0:
                     json_str = response_text[start_idx:end_idx]
-                    path_data = json.loads(json_str)
+                    decision_data = json.loads(json_str)
                 else:
                     raise ValueError("No JSON found in response")
             except (json.JSONDecodeError, ValueError):
-                self.memory.log_thought(f"Failed to parse LLM path planning response: {response_text}")
-                return self._fallback_path_planning()
+                memory_ctx.log_thought(f"Failed to parse LLM response: {response_text}")
+                return self._fallback_decision_stepwise(goal_pos)
 
-            # Validate the path
-            path = path_data.get("path", [])
-            reasoning = path_data.get("reasoning", "No reasoning provided")
+            # Validate the decision
+            move = decision_data.get("move", "").lower()
+            reason = decision_data.get("reason", "No reason provided")
 
-            if not isinstance(path, list) or len(path) == 0:
-                self.memory.log_thought("Invalid path from LLM, using fallback")
-                return self._fallback_path_planning()
+            # Check if move is valid (both a real direction and within boundaries)
+            if move not in ["up", "down", "left", "right"]:
+                memory_ctx.log_thought(f"Invalid move '{move}' from LLM, using fallback")
+                return self._fallback_decision_stepwise(goal_pos)
 
-            # Validate each move in the path
-            valid_moves = ["up", "down", "left", "right"]
-            for move in path:
-                if move.lower() not in valid_moves:
-                    self.memory.log_thought(f"Invalid move '{move}' in path, using fallback")
-                    return self._fallback_path_planning()
+            # Check if move is within valid moves for current position
+            if move not in [m.lower() for m in valid_moves]:
+                memory_ctx.log_thought(f"LLM chose '{move}' but only {valid_moves} are valid from position ({x}, {y}), using fallback")
+                return self._fallback_decision_stepwise(goal_pos)
 
-            # Set the planned path
-            self.planned_path = [move.lower() for move in path]
-            self.path_index = 0
+            # Log the decision
+            memory_ctx.log_move(move, reason)
+            memory_ctx.log_thought(f"LLM decided: {move} - {reason}")
 
-            # Log the plan
-            self.memory.log_thought(f"LLM planned path: {self.planned_path}")
-            self.memory.log_thought(f"Path reasoning: {reasoning}")
-
-            return True
+            # Convert to delta and return
+            dx, dy = self.direction_to_delta(move)
+            return ((dx, dy), reason)
 
         except Exception as e:
-            self.memory.log_thought(f"Error in LLM path planning: {str(e)}")
-            return self._fallback_path_planning()
+            memory_ctx.log_thought(f"Error in LLM stepwise decision making: {str(e)}")
+            return self._fallback_decision_stepwise(goal_pos)
 
-    def _fallback_path_planning(self) -> bool:
+    def _fallback_decision_stepwise(self, goal_pos: Tuple[int, int]) -> Tuple[Tuple[int, int], str]:
         """
-        Simple fallback path planning when LLM is unavailable.
+        Simple fallback decision for stepwise approach.
+
+        Args:
+            goal_pos: Goal position
 
         Returns:
-            True (always succeeds with simple path)
+            Tuple of ((dx, dy), reason)
         """
         x, y = self.current_position
-        gx, gy = self.goal
+        gx, gy = goal_pos
 
-        path = []
+        # Simple greedy approach: move towards goal
+        dx, dy = 0, 0
+        direction = "stay"
 
-        # Simple path: move horizontally first, then vertically
-        while x != gx:
-            if gx > x:
-                path.append("right")
-                x += 1
-            else:
-                path.append("left")
-                x -= 1
+        if gx > x:
+            dx, dy = 1, 0
+            direction = "right"
+        elif gx < x:
+            dx, dy = -1, 0
+            direction = "left"
+        elif gy > y:
+            dx, dy = 0, 1
+            direction = "down"
+        elif gy < y:
+            dx, dy = 0, -1
+            direction = "up"
 
-        while y != gy:
-            if gy > y:
-                path.append("down")
-                y += 1
-            else:
-                path.append("up")
-                y -= 1
+        reason = f"Fallback: Moving {direction} towards goal"
+        self.memory.log_move(direction, reason)
+        self.memory.log_thought(reason)
 
-        self.planned_path = path
-        self.path_index = 0
-
-        self.memory.log_thought(f"Fallback planned path: {self.planned_path}")
-        return True
+        return ((dx, dy), reason)
 
     def decide_next_move(self, grid: Any) -> Optional[Tuple[int, int]]:
         """
-        Decide the next move using path planning approach.
+        Decide the next move using stepwise LLM approach.
 
         Args:
             grid: Current grid state
@@ -326,74 +305,9 @@ IMPORTANT:
         Returns:
             Tuple of (dx, dy) for the next move, or None if decision fails
         """
-        # Check if we need to plan a new path
-        need_new_plan = (
-            len(self.planned_path) == 0 or  # No current plan
-            self.path_index >= len(self.planned_path) or  # Finished current plan
-            self._detect_loop()  # Stuck in a loop
-        )
-
-        if need_new_plan:
-            if self._detect_loop():
-                self.stuck_counter += 1
-                self.memory.log_thought(f"Detected loop! Stuck counter: {self.stuck_counter}")
-
-                if self.stuck_counter >= self.max_stuck_attempts:
-                    self.memory.log_thought("Too many failed attempts, resetting stuck counter")
-                    self.stuck_counter = 0
-
-            # Plan a new path
-            if not self._plan_path(grid):
-                return self._fallback_decision()
-
-        # Execute the next move from the planned path
-        if self.path_index < len(self.planned_path):
-            next_move = self.planned_path[self.path_index]
-            self.path_index += 1
-
-            # Log the move
-            self.memory.log_move(next_move, f"Following planned path (step {self.path_index}/{len(self.planned_path)})")
-
-            return self.direction_to_delta(next_move)
-        else:
-            # Shouldn't happen, but fallback just in case
-            return self._fallback_decision()
-
-    def _fallback_decision(self) -> Tuple[int, int]:
-        """
-        Simple fallback decision when LLM is unavailable.
-
-        Returns:
-            Tuple of (dx, dy) for a basic move towards goal
-        """
-        x, y = self.current_position
-        gx, gy = self.goal
-
-        # Simple greedy approach: move towards goal
-        dx = 0
-        dy = 0
-
-        if gx > x:
-            dx = 1
-            direction = "right"
-        elif gx < x:
-            dx = -1
-            direction = "left"
-        elif gy > y:
-            dy = 1
-            direction = "down"
-        elif gy < y:
-            dy = -1
-            direction = "up"
-        else:
-            # Already at goal
-            direction = "stay"
-
-        reason = f"Fallback: Moving {direction} towards goal"
-        self.memory.log_move(direction, reason)
-        self.memory.log_thought(reason)
-
-        return (dx, dy)
+        # Use the new stepwise decision method
+        result, reason = self.decide_next_move_stepwise(grid)
+        return result
 
     def update_position(self, new_position: Tuple[int, int]):
         """
@@ -404,19 +318,6 @@ IMPORTANT:
         """
         self.current_position = new_position
         self.memory.log_position(new_position[0], new_position[1])
-
-        # Update position history for loop detection
-        self.position_history.append(new_position)
-
-        # Keep only recent positions to avoid memory bloat
-        if len(self.position_history) > self.position_history_size:
-            self.position_history = self.position_history[-self.position_history_size:]
-
-        # Reset stuck counter if we successfully moved to a new position
-        if len(self.position_history) >= 2 and self.position_history[-1] != self.position_history[-2]:
-            if self.stuck_counter > 0:
-                self.memory.log_thought("Successfully moved to new position, resetting stuck counter")
-                self.stuck_counter = 0
 
     def get_position(self) -> Tuple[int, int]:
         """
