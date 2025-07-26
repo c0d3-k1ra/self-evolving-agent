@@ -52,7 +52,8 @@ class AgentSimulation:
 
         self.agent = Agent(goal=goal_pos, memory=self.memory, current_position=start_pos)
 
-        # Set goal in grid
+        # Set positions in grid
+        self.grid_world.set_cell_type(start_pos[0], start_pos[1], CellType.START)
         self.grid_world.set_cell_type(goal_pos[0], goal_pos[1], CellType.GOAL)
 
         # Simulation state
@@ -62,6 +63,8 @@ class AgentSimulation:
         self.last_move_time = 0
         self.move_count = 0
         self.max_moves = 100
+        self.simulation_complete = False  # Track if current simulation is done
+        self.start_position = start_pos  # Remember start position
 
         print(f"Agent starting at {start_pos}, goal at {goal_pos}")
         print("Controls:")
@@ -99,9 +102,8 @@ class AgentSimulation:
         """Reset the simulation to initial state."""
         print("Resetting simulation...")
 
-        # Clear ALL positions from grid (agents and goals)
-        self.grid_world.clear_agent_positions()
-        self.grid_world.clear_goal_positions()  # Clear old goals too!
+        # Clear ALL positions from grid
+        self.grid_world.clear_all_special_positions()
 
         # Find new positions
         start_pos = self.grid_world.find_empty_position()
@@ -114,31 +116,41 @@ class AgentSimulation:
         self.memory.clear_memory()
         self.agent = Agent(goal=goal_pos, memory=self.memory, current_position=start_pos)
 
-        # Set new goal
+        # Set positions in grid
+        self.grid_world.set_cell_type(start_pos[0], start_pos[1], CellType.START)
         self.grid_world.set_cell_type(goal_pos[0], goal_pos[1], CellType.GOAL)
 
-        # Reset counters
+        # Reset state
         self.move_count = 0
         self.last_move_time = 0
+        self.simulation_complete = False
+        self.start_position = start_pos
 
         print(f"New start: {start_pos}, new goal: {goal_pos}")
 
     def update_agent(self):
         """Update agent position based on LLM decision."""
-        if self.paused or self.agent.is_at_goal():
+        # Don't update if paused or simulation is complete
+        if self.paused or self.simulation_complete:
             return
 
         current_time = time.time()
         if current_time - self.last_move_time < self.step_delay:
             return
 
+        # Check if max moves reached
         if self.move_count >= self.max_moves:
-            print("Maximum moves reached! Resetting...")
-            self.reset_simulation()
+            print(f"❌ Maximum moves ({self.max_moves}) reached! Simulation complete.")
+            print("Press 'R' to reset and start a new simulation.")
+            self.simulation_complete = True
             return
 
-        # Clear previous agent position from grid
-        self.grid_world.clear_agent_positions()
+        # Mark previous position as visited (but not start position)
+        current_pos = self.agent.get_position()
+        if current_pos != self.start_position:
+            current_cell = self.grid_world.get_cell_type(current_pos[0], current_pos[1])
+            if current_cell == CellType.AGENT:
+                self.grid_world.set_cell_type(current_pos[0], current_pos[1], CellType.VISITED)
 
         # Get agent decision
         grid_data = self.grid_world.get_grid_as_list()
@@ -151,24 +163,27 @@ class AgentSimulation:
 
             # Check if move is valid
             if self.grid_world.is_valid_position(new_x, new_y):
-                # Don't move into goal cell (we'll handle goal reaching separately)
-                if self.grid_world.get_cell_type(new_x, new_y) != CellType.GOAL:
-                    self.agent.update_position((new_x, new_y))
-                else:
+                target_cell = self.grid_world.get_cell_type(new_x, new_y)
+
+                if target_cell == CellType.GOAL:
                     # Reached goal!
                     self.agent.update_position((new_x, new_y))
-                    print(f"🎉 Goal reached in {self.move_count + 1} moves!")
+                    self.move_count += 1
+                    print(f"🎉 Goal reached in {self.move_count} moves!")
                     print("Agent memory summary:")
                     print(self.memory.get_summary())
-                    time.sleep(2)  # Pause to show success
-                    self.reset_simulation()
+                    print("Press 'R' to reset and start a new simulation.")
+                    self.simulation_complete = True
+
+                    # Set agent at goal position
+                    self.grid_world.set_cell_type(new_x, new_y, CellType.AGENT)
                     return
+                else:
+                    # Normal move
+                    self.agent.update_position((new_x, new_y))
+                    self.grid_world.set_cell_type(new_x, new_y, CellType.AGENT)
             else:
                 print(f"Invalid move attempted: ({current_x}, {current_y}) -> ({new_x}, {new_y})")
-
-        # Update grid with agent position
-        agent_pos = self.agent.get_position()
-        self.grid_world.set_cell_type(agent_pos[0], agent_pos[1], CellType.AGENT)
 
         self.move_count += 1
         self.last_move_time = current_time
@@ -181,21 +196,47 @@ class AgentSimulation:
         pos = self.agent.get_position()
         goal = self.agent.get_goal()
         distance = self.agent.get_distance_to_goal()
+        start = self.start_position
+
+        # Status determination
+        if self.simulation_complete:
+            if self.agent.is_at_goal():
+                status = "🎉 GOAL REACHED!"
+                status_color = (0, 150, 0)  # Green
+            else:
+                status = "❌ MAX MOVES REACHED"
+                status_color = (150, 0, 0)  # Red
+        elif self.paused:
+            status = "⏸️ PAUSED"
+            status_color = (100, 100, 0)  # Yellow
+        else:
+            status = "🏃 RUNNING"
+            status_color = (0, 0, 150)  # Blue
 
         info_lines = [
-            f"Position: {pos}  Goal: {goal}  Distance: {distance}",
+            f"Start: {start}  Current: {pos}  Goal: {goal}  Distance: {distance}",
             f"Moves: {self.move_count}/{self.max_moves}  Speed: {self.step_delay:.1f}s",
-            f"Status: {'PAUSED' if self.paused else 'RUNNING'}  {'GOAL REACHED!' if self.agent.is_at_goal() else ''}"
+            f"Legend: S=Start, V=Visited, A=Agent, G=Goal"
         ]
 
         for i, line in enumerate(info_lines):
             text_surface = self.small_font.render(line, True, (0, 0, 0))
             self.screen.blit(text_surface, (10, y_offset + i * 20))
 
-        # Recent thoughts
+        # Status line with color
+        status_surface = self.small_font.render(f"Status: {status}", True, status_color)
+        self.screen.blit(status_surface, (10, y_offset + 60))
+
+        # Completion message
+        if self.simulation_complete:
+            completion_msg = "Press 'R' to reset and start new simulation"
+            completion_surface = self.small_font.render(completion_msg, True, (100, 100, 100))
+            self.screen.blit(completion_surface, (10, y_offset + 80))
+
+        # Recent thoughts (moved down)
         recent_thoughts = self.memory.thoughts[-2:] if self.memory.thoughts else []
         if recent_thoughts:
-            thought_y = y_offset + 70
+            thought_y = y_offset + 100 if self.simulation_complete else y_offset + 80
             thought_text = self.small_font.render("Recent thoughts:", True, (0, 0, 100))
             self.screen.blit(thought_text, (10, thought_y))
 

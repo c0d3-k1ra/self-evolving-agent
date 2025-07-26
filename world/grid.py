@@ -13,6 +13,8 @@ class CellType(Enum):
     WALL = 1
     GOAL = 2
     AGENT = 3
+    START = 4
+    VISITED = 5
 
 
 class GridWorld:
@@ -43,7 +45,9 @@ class GridWorld:
             CellType.EMPTY: (255, 255, 255),    # White
             CellType.WALL: (64, 64, 64),        # Dark Gray
             CellType.GOAL: (0, 255, 0),         # Green
-            CellType.AGENT: (0, 100, 255)       # Blue
+            CellType.AGENT: (0, 100, 255),      # Blue
+            CellType.START: (255, 200, 100),    # Light Orange
+            CellType.VISITED: (220, 220, 220)   # Light Gray
         }
 
         # Create some walls for interesting navigation
@@ -112,6 +116,27 @@ class GridWorld:
                 if self.grid[y][x] == CellType.GOAL:
                     self.grid[y][x] = CellType.EMPTY
 
+    def clear_visited_positions(self):
+        """Clear all visited positions from the grid."""
+        for y in range(self.height):
+            for x in range(self.width):
+                if self.grid[y][x] == CellType.VISITED:
+                    self.grid[y][x] = CellType.EMPTY
+
+    def clear_start_positions(self):
+        """Clear all start positions from the grid."""
+        for y in range(self.height):
+            for x in range(self.width):
+                if self.grid[y][x] == CellType.START:
+                    self.grid[y][x] = CellType.EMPTY
+
+    def clear_all_special_positions(self):
+        """Clear all special positions (agent, goal, start, visited) from the grid."""
+        self.clear_agent_positions()
+        self.clear_goal_positions()
+        self.clear_start_positions()
+        self.clear_visited_positions()
+
     def render(self, screen: pygame.Surface):
         """
         Render the grid to a pygame surface.
@@ -145,7 +170,9 @@ class GridWorld:
             CellType.EMPTY: ".",
             CellType.WALL: "#",
             CellType.GOAL: "G",
-            CellType.AGENT: "A"
+            CellType.AGENT: "A",
+            CellType.START: "S",
+            CellType.VISITED: "V"
         }
 
         return [[symbol_map[cell] for cell in row] for row in self.grid]
