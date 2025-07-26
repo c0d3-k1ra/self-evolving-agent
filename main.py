@@ -10,6 +10,7 @@ import time
 from dotenv import load_dotenv
 from agent.memory import AgentMemory
 from agent.agent import Agent
+from agent.reflection import ReflectionManager
 from world.grid import GridWorld, CellType
 
 # Load environment variables from .env file
@@ -39,8 +40,9 @@ class AgentSimulation:
         self.font = pygame.font.Font(None, 24)
         self.small_font = pygame.font.Font(None, 18)
 
-        # Initialize agent
+        # Initialize agent and reflection system
         self.memory = AgentMemory()
+        self.reflection_manager = ReflectionManager()
 
         # Find starting position and goal
         start_pos = self.grid_world.find_empty_position()
@@ -187,6 +189,38 @@ class AgentSimulation:
 
         self.move_count += 1
         self.last_move_time = current_time
+
+        # Check if reflection is needed after the move
+        current_pos = self.agent.get_position()
+        goal_pos = self.agent.get_goal()
+
+        if self.reflection_manager.should_reflect(self.memory, goal_pos, current_pos):
+            print("\n" + "="*60)
+            print("🧠 REFLECTION TRIGGERED")
+            print("="*60)
+
+            # Generate reflection
+            reflection = self.reflection_manager.generate_reflection(self.memory, goal_pos, current_pos)
+
+            if reflection:
+                # Log the reflection
+                self.memory.log_reflection(reflection)
+
+                # Display reflection results
+                print(f"📋 DIAGNOSIS: {reflection.get('diagnosis', 'No diagnosis')}")
+                print(f"🔍 PATTERN: {reflection.get('pattern_detected', 'No pattern detected')}")
+                print(f"🎯 STRATEGY: {reflection.get('next_strategy', 'No strategy')}")
+                print(f"➡️  CORRECTED MOVE: {reflection.get('corrected_move', 'None')}")
+                print(f"💡 REASON: {reflection.get('reason', 'No reason')}")
+                print(f"🔮 FUTURE ADVICE: {reflection.get('future_advice', 'No advice')}")
+                print("="*60)
+
+                # Optional: Override next move with corrected move
+                # This could be implemented by storing the corrected move and using it in the next iteration
+                # For now, we'll just log it and let the normal decision process continue
+            else:
+                print("❌ Failed to generate reflection")
+                print("="*60)
 
     def render_info(self):
         """Render information text below the grid."""

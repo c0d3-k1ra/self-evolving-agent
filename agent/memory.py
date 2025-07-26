@@ -14,10 +14,11 @@ class AgentMemory:
 
     def __init__(self):
         """Initialize the agent memory with default values."""
-        self.positions: List[Tuple[int, int]] = []
+        self.positions: List[dict] = []  # Changed to dict format for reflection compatibility
         self.tools: List[str] = ["move"]  # Start with basic move tool
         self.thoughts: List[str] = []
-        self.move_history: List[dict] = []  # Store moves with direction and reason
+        self.moves: List[dict] = []  # Renamed from move_history for consistency
+        self.reflections: List[dict] = []  # Store reflection data
 
     def log_position(self, x: int, y: int):
         """
@@ -27,7 +28,12 @@ class AgentMemory:
             x: X coordinate
             y: Y coordinate
         """
-        position = (x, y)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        position = {
+            "x": x,
+            "y": y,
+            "timestamp": timestamp
+        }
         self.positions.append(position)
 
     def add_tool(self, tool_name: str):
@@ -65,7 +71,26 @@ class AgentMemory:
             "direction": direction,
             "reason": reason
         }
-        self.move_history.append(move_entry)
+        self.moves.append(move_entry)
+
+    def log_reflection(self, reflection_dict: dict):
+        """
+        Log a reflection from the ReflectionManager.
+
+        Args:
+            reflection_dict: Dictionary containing reflection data
+        """
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        reflection_entry = {
+            "timestamp": timestamp,
+            **reflection_dict  # Include all reflection data
+        }
+        self.reflections.append(reflection_entry)
+
+        # Also log as a thought for visibility
+        diagnosis = reflection_dict.get("diagnosis", "No diagnosis")
+        strategy = reflection_dict.get("next_strategy", "No strategy")
+        self.log_thought(f"REFLECTION: {diagnosis} | Strategy: {strategy}")
 
     def get_summary(self) -> str:
         """
@@ -81,8 +106,8 @@ class AgentMemory:
         # Position history
         summary_lines.append("POSITION HISTORY:")
         if self.positions:
-            for i, (x, y) in enumerate(self.positions):
-                summary_lines.append(f"  {i+1}. ({x}, {y})")
+            for i, pos in enumerate(self.positions):
+                summary_lines.append(f"  {i+1}. ({pos['x']}, {pos['y']}) [{pos['timestamp']}]")
         else:
             summary_lines.append("  No positions logged yet")
         summary_lines.append("")
@@ -95,11 +120,22 @@ class AgentMemory:
 
         # Move history
         summary_lines.append("MOVEMENT HISTORY:")
-        if self.move_history:
-            for move in self.move_history:
+        if self.moves:
+            for move in self.moves:
                 summary_lines.append(f"  [{move['timestamp']}] {move['direction']} - {move['reason']}")
         else:
             summary_lines.append("  No moves logged yet")
+        summary_lines.append("")
+
+        # Reflections
+        summary_lines.append("REFLECTIONS:")
+        if self.reflections:
+            for reflection in self.reflections:
+                summary_lines.append(f"  [{reflection['timestamp']}] {reflection.get('diagnosis', 'No diagnosis')}")
+                summary_lines.append(f"    Strategy: {reflection.get('next_strategy', 'No strategy')}")
+                summary_lines.append(f"    Corrected Move: {reflection.get('corrected_move', 'None')}")
+        else:
+            summary_lines.append("  No reflections yet")
         summary_lines.append("")
 
         # Thoughts
@@ -152,7 +188,8 @@ class AgentMemory:
         self.positions.clear()
         self.tools = ["move"]  # Reset to default tools
         self.thoughts.clear()
-        self.move_history.clear()
+        self.moves.clear()
+        self.reflections.clear()
 
     def get_stats(self) -> dict:
         """
@@ -165,5 +202,15 @@ class AgentMemory:
             "total_positions": len(self.positions),
             "total_tools": len(self.tools),
             "total_thoughts": len(self.thoughts),
-            "total_moves": len(self.move_history)
+            "total_moves": len(self.moves),
+            "total_reflections": len(self.reflections)
         }
+
+    def get_last_reflection(self) -> dict:
+        """
+        Get the most recent reflection.
+
+        Returns:
+            Last reflection dictionary, or empty dict if none exist
+        """
+        return self.reflections[-1] if self.reflections else {}

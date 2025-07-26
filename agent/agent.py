@@ -151,6 +151,21 @@ class Agent:
 
         boundary_context = f"Boundaries: {', '.join(boundary_info)}" if boundary_info else "No boundary constraints"
 
+        # Check for previous reflections
+        last_reflection = memory_ctx.get_last_reflection()
+        reflection_context = ""
+        if last_reflection:
+            diagnosis = last_reflection.get('diagnosis', 'No diagnosis')
+            strategy = last_reflection.get('next_strategy', 'No strategy')
+            advice = last_reflection.get('future_advice', 'No advice')
+            reflection_context = f"""
+PREVIOUS REFLECTION:
+- Diagnosis: {diagnosis}
+- Suggested Strategy: {strategy}
+- Advice: {advice}
+- Consider this reflection when making your decision.
+"""
+
         # Create the step-by-step prompt
         prompt = f"""You are an agent navigating a grid world.
 
@@ -172,6 +187,8 @@ COORDINATE SYSTEM:
 - X increases LEFT to RIGHT (0 = leftmost)
 - Y increases TOP to BOTTOM (0 = topmost)
 - up = decrease Y, down = increase Y, left = decrease X, right = increase X
+
+{reflection_context}
 
 TASK: Choose your next move to get closer to the goal.
 
